@@ -1,29 +1,28 @@
 TelegramDownloaderBot/
-├── README.md
-├── requirements.txt
-├── Procfile
-├── runtime.txt
+├── main.py
 ├── config.py
-├── bot.py
+├── requirements.txt
+├── README.md
+├── render.yaml
 ├── database/
 │   ├── __init__.py
-│   └── mongo.py
-├── helpers/
-│   ├── __init__.py
-│   ├── downloader.py
-│   ├── uploader.py
-│   ├── progress.py
-│   ├── thumbnail.py
-│   ├── utils.py
-│   └── queue_manager.py
-├── plugins/
+│   ├── mongodb.py
+│   └── users.py
+├── handlers/
 │   ├── __init__.py
 │   ├── start.py
 │   ├── help.py
 │   ├── settings.py
 │   ├── broadcast.py
+│   ├── premium.py
 │   ├── cancel.py
-│   └── download_handler.py
-└── web/
+│   ├── link_handler.py
+│   └── file_handler.py
+└── utils/
     ├── __init__.py
-    └── keep_alive.py
+    ├── progress.py
+    ├── downloader.py
+    ├── uploader.py
+    ├── thumbnail.py
+    ├── queue_manager.py
+    └── helpers.py
