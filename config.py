@@ -9,14 +9,15 @@ class Config:
     API_HASH = os.environ.get("API_HASH", "")
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
     
-    # MongoDB
-    MONGO_URL = os.environ.get("MONGO_URL", "")
+    # MongoDB Configuration
+    MONGO_URI = os.environ.get("MONGO_URI", "")
+    DB_NAME = "TelegramDownloaderBot"
     
     # Fixed Owners
     OWNER_IDS = [1598576202, 6518065496]
     
     # Log Channel
-    LOG_CHANNEL = -1002286415377
+    LOG_CHANNEL = -1003286415377
     
     # Force Subscribe Channel
     FORCE_SUB_CHANNEL = "serenaunzipbot"
@@ -26,30 +27,31 @@ class Config:
     OWNER_CONTACT = "https://t.me/technicalserena"
     OWNER_USERNAME = "@Xioqui_xin"
     
-    # Start Picture
+    # Media URLs from Environment
     START_PIC = os.environ.get("START_PIC", "")
-    
-    # Default Thumbnail for PDFs
-    DEFAULT_THUMBNAIL = os.environ.get("DEFAULT_THUMBNAIL", "")
+    THUMBNAIL_URL = os.environ.get("THUMBNAIL_URL", "")
     
     # Freemium Limits (Configurable)
     FREE_DAILY_LIMIT = 5
     FREE_MAX_SIZE = 200 * 1024 * 1024  # 200 MB in bytes
-    FREE_SPEED_LIMIT = 1  # MB/s (low speed)
+    FREE_MAX_SIZE_MB = 200
     
     # Premium Limits
     PREMIUM_MAX_SIZE = 4 * 1024 * 1024 * 1024  # 4 GB in bytes
-    PREMIUM_SPEED_LIMIT = 0  # 0 means unlimited
+    PREMIUM_MAX_SIZE_MB = 4096
     
-    # Progress Update Interval
+    # Download/Upload Settings
     PROGRESS_UPDATE_INTERVAL = 8  # seconds
+    CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
     
-    # Download Path
-    DOWNLOAD_PATH = "./downloads"
+    # Temp Directory
+    DOWNLOAD_DIR = "./downloads"
     
     # Flask Port for Render
     PORT = int(os.environ.get("PORT", 8080))
     
-    # Bot Info
-    BOT_NAME = "Serena Downloader Bot"
-    BOT_VERSION = "1.0.0"
+    # Supported Extensions
+    VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp']
+    AUDIO_EXTENSIONS = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a']
+    IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff']
+    DOCUMENT_EXTENSIONS = ['.pdf', '.doc', '.docx', '.txt', '.xls', '.xlsx', '.ppt', '.pptx', '.apk', '.zip', '.rar']
