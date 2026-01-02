@@ -31,6 +31,9 @@ class Config:
     START_PIC = os.environ.get("START_PIC", "")
     THUMBNAIL_URL = os.environ.get("THUMBNAIL_URL", "")
     
+    # Terabox Cookies (Optional - for better download)
+    TERABOX_COOKIE = os.environ.get("TERABOX_COOKIE", "")
+    
     # Freemium Limits (Configurable)
     FREE_DAILY_LIMIT = 5
     FREE_MAX_SIZE = 200 * 1024 * 1024  # 200 MB in bytes
