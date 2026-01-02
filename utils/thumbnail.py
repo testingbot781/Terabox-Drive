@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import aiohttp
 from PIL import Image
 from typing import Optional
 from config import Config
@@ -31,13 +32,14 @@ class ThumbnailGenerator:
             
             await process.communicate()
             
-            if os.path.exists(output_path):
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return output_path
             
-            return None
+            # Fallback to default thumbnail
+            return await self.download_default_thumbnail(output_path)
         except Exception as e:
             logger.error(f"Video thumbnail error: {e}")
-            return None
+            return await self.download_default_thumbnail(output_path)
     
     async def generate_image_thumbnail(self, image_path: str, output_path: str) -> Optional[str]:
         """Generate thumbnail from image"""
@@ -62,23 +64,11 @@ class ThumbnailGenerator:
             return None
     
     async def generate_pdf_thumbnail(self, pdf_path: str, output_path: str) -> Optional[str]:
-        """Generate thumbnail from PDF first page"""
+        """Generate thumbnail for PDF - uses default thumbnail"""
         try:
-            # Try using pdf2image
-            try:
-                from pdf2image import convert_from_path
-                
-                images = convert_from_path(pdf_path, first_page=1, last_page=1, size=(320, 320))
-                if images:
-                    images[0].save(output_path, 'JPEG', quality=85)
-                    return output_path
-            except ImportError:
-                pass
-            
-            # Fallback: Use default thumbnail
+            # Use default thumbnail for PDFs
             if self.default_thumbnail:
                 return await self.download_default_thumbnail(output_path)
-            
             return None
         except Exception as e:
             logger.error(f"PDF thumbnail error: {e}")
@@ -88,22 +78,23 @@ class ThumbnailGenerator:
         """Extract album art from audio file"""
         try:
             from mutagen import File
-            from mutagen.mp3 import MP3
-            from mutagen.id3 import ID3
             
             audio = File(audio_path)
             
             if audio is None:
-                return None
+                return await self.download_default_thumbnail(output_path)
             
             # Try to get album art
             artwork = None
             
+            # Check for pictures attribute (FLAC, OGG, etc.)
             if hasattr(audio, 'pictures') and audio.pictures:
                 artwork = audio.pictures[0].data
-            elif hasattr(audio, 'tags'):
+            
+            # Check for tags (MP3 with ID3)
+            elif hasattr(audio, 'tags') and audio.tags:
                 for key in audio.tags.keys():
-                    if 'APIC' in key:
+                    if 'APIC' in str(key):
                         artwork = audio.tags[key].data
                         break
             
@@ -112,18 +103,26 @@ class ThumbnailGenerator:
                     f.write(artwork)
                 
                 # Resize if needed
-                await self.generate_image_thumbnail(output_path, output_path)
+                try:
+                    with Image.open(output_path) as img:
+                        if img.mode in ('RGBA', 'P'):
+                            img = img.convert('RGB')
+                        img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                        img.save(output_path, 'JPEG', quality=85)
+                except:
+                    pass
+                
                 return output_path
             
-            return None
+            # Fallback to default
+            return await self.download_default_thumbnail(output_path)
         except Exception as e:
             logger.error(f"Audio thumbnail error: {e}")
-            return None
+            return await self.download_default_thumbnail(output_path)
     
     async def generate_apk_thumbnail(self, apk_path: str, output_path: str) -> Optional[str]:
-        """Generate thumbnail for APK (use default or icon)"""
+        """Generate thumbnail for APK - uses default thumbnail"""
         try:
-            # For APK, we use default thumbnail
             if self.default_thumbnail:
                 return await self.download_default_thumbnail(output_path)
             return None
@@ -134,7 +133,8 @@ class ThumbnailGenerator:
     async def download_default_thumbnail(self, output_path: str) -> Optional[str]:
         """Download default thumbnail from URL"""
         try:
-            import aiohttp
+            if not self.default_thumbnail:
+                return None
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(self.default_thumbnail) as resp:
@@ -142,6 +142,17 @@ class ThumbnailGenerator:
                         content = await resp.read()
                         with open(output_path, 'wb') as f:
                             f.write(content)
+                        
+                        # Resize to proper thumbnail size
+                        try:
+                            with Image.open(output_path) as img:
+                                if img.mode in ('RGBA', 'P'):
+                                    img = img.convert('RGB')
+                                img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                                img.save(output_path, 'JPEG', quality=85)
+                        except:
+                            pass
+                        
                         return output_path
             return None
         except Exception as e:
@@ -160,24 +171,14 @@ class ThumbnailGenerator:
             elif file_type == "pdf":
                 return await self.generate_pdf_thumbnail(file_path, output_path)
             elif file_type == "audio":
-                thumb = await self.generate_audio_thumbnail(file_path, output_path)
-                if not thumb and self.default_thumbnail:
-                    return await self.download_default_thumbnail(output_path)
-                return thumb
+                return await self.generate_audio_thumbnail(file_path, output_path)
             elif file_type == "apk":
                 return await self.generate_apk_thumbnail(file_path, output_path)
             else:
+                # For other files, use default thumbnail
+                if self.default_thumbnail:
+                    return await self.download_default_thumbnail(output_path)
                 return None
         except Exception as e:
             logger.error(f"Thumbnail generation error: {e}")
             return None
-    
-    async def apply_watermark_to_pdf(self, pdf_path: str, thumbnail_path: str) -> bool:
-        """Apply thumbnail/watermark to PDF first page"""
-        try:
-            # This is a placeholder - implementing full PDF watermarking
-            # requires additional libraries like PyPDF2 or reportlab
-            return True
-        except Exception as e:
-            logger.error(f"PDF watermark error: {e}")
-            return False
