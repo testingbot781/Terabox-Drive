@@ -1,13 +1,10 @@
 import os
-import uuid
 import asyncio
 import logging
-import shutil
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 from database import db, user_db
-from utils.queue_manager import queue_manager, Task
 from utils.downloader import Downloader
 from utils.uploader import Uploader
 from utils.helpers import (
@@ -24,40 +21,38 @@ uploader = Uploader()
 
 
 async def check_force_sub(client: Client, user_id: int) -> bool:
-    """Check if user has joined force subscribe channel"""
+    """Check force subscribe"""
     try:
         member = await client.get_chat_member(Config.FORCE_SUB_CHANNEL, user_id)
         if member.status in ["kicked", "banned", "left"]:
             return False
         return True
-    except Exception:
+    except:
         return True
 
 
 async def link_filter_func(_, __, message: Message):
-    """Filter function to detect links"""
+    """Filter for links"""
     if not message.text:
         return False
     
     text = message.text.lower()
-    
-    has_link = any([
+    return any([
         'http://' in text,
         'https://' in text,
-        'drive.google.com' in text,
+        'drive.google' in text,
         'terabox' in text,
         '1024tera' in text,
+        'storage.googleapis' in text,
     ])
-    
-    return has_link
 
 link_filter = filters.create(link_filter_func)
 
 
 @Client.on_message(filters.private & filters.text & link_filter)
 async def private_link_handler(client: Client, message: Message):
-    """Handle links in private chat"""
-    logger.info(f"📥 Private link received from {message.from_user.id}")
+    """Handle private links"""
+    logger.info(f"📥 Private link from {message.from_user.id}")
     
     if message.text.startswith('/'):
         return
@@ -67,7 +62,7 @@ async def private_link_handler(client: Client, message: Message):
 
 @Client.on_message(filters.group & filters.text & link_filter)
 async def group_link_handler(client: Client, message: Message):
-    """Handle links in group when bot is mentioned or replied to"""
+    """Handle group links"""
     if not message.text:
         return
     
@@ -75,38 +70,37 @@ async def group_link_handler(client: Client, message: Message):
     bot_username = f"@{bot.username}".lower() if bot.username else ""
     
     is_mentioned = bot_username and bot_username in message.text.lower()
-    
     is_reply_to_bot = False
-    if message.reply_to_message:
-        if message.reply_to_message.from_user:
-            is_reply_to_bot = message.reply_to_message.from_user.id == bot.id
+    
+    if message.reply_to_message and message.reply_to_message.from_user:
+        is_reply_to_bot = message.reply_to_message.from_user.id == bot.id
     
     if not (is_mentioned or is_reply_to_bot):
         return
     
-    logger.info(f"📥 Group link received from {message.from_user.id}")
+    logger.info(f"📥 Group link from {message.from_user.id}")
     await process_user_links(client, message, is_group=True)
 
 
 async def process_user_links(client: Client, message: Message, is_group: bool = False):
-    """Process links from user message"""
+    """Process links"""
     user_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name or "User"
     chat_id = message.chat.id
     
-    logger.info(f"🔄 Processing links for user {user_id}")
+    logger.info(f"🔄 Processing for user {user_id}")
     
     try:
         await db.add_user(user_id, username, first_name)
-    except Exception as e:
-        logger.error(f"DB add user error: {e}")
+    except:
+        pass
     
     try:
         if await db.is_user_banned(user_id):
-            return await message.reply_text("❌ You are banned from using this bot!")
-    except Exception as e:
-        logger.error(f"Ban check error: {e}")
+            return await message.reply_text("❌ You are banned!")
+    except:
+        pass
     
     if not is_group:
         try:
@@ -116,12 +110,11 @@ async def process_user_links(client: Client, message: Message, is_group: bool = 
                     [InlineKeyboardButton("🔄 Try Again", callback_data="check_sub")]
                 ])
                 return await message.reply_text(
-                    "⚠️ **Please join our channel first!**\n\n"
-                    f"🔗 {Config.FORCE_SUB_LINK}",
+                    "⚠️ **Please join our channel first!**",
                     reply_markup=keyboard
                 )
-        except Exception as e:
-            logger.error(f"Force sub error: {e}")
+        except:
+            pass
     
     try:
         can_use, remaining = await user_db.can_use_bot(user_id)
@@ -130,41 +123,34 @@ async def process_user_links(client: Client, message: Message, is_group: bool = 
         if not can_use:
             return await message.reply_text(
                 "❌ **Daily Limit Reached!**\n\n"
-                f"You've used all {Config.FREE_DAILY_LIMIT} free tasks for today.\n\n"
                 "💎 Upgrade to Premium for unlimited access!",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("👨‍💻 Get Premium", url=Config.OWNER_CONTACT)]
                 ])
             )
-    except Exception as e:
-        logger.error(f"Limit check error: {e}")
+    except:
         is_premium = False
         remaining = Config.FREE_DAILY_LIMIT
     
     links = extract_links_from_text(message.text)
-    logger.info(f"📎 Found {len(links)} links in message")
+    logger.info(f"📎 Found {len(links)} links")
     
     if not links:
-        return await message.reply_text("❌ No valid links found in your message!")
+        return await message.reply_text("❌ No valid links found!")
     
     supported_links = []
     for link in links:
         if is_gdrive_link(link) or is_terabox_link(link) or is_direct_link(link):
             supported_links.append(link)
-            logger.info(f"✅ Supported link: {link[:50]}...")
     
     if not supported_links:
         return await message.reply_text(
-            "❌ **No Supported Links Found!**\n\n"
-            "**Supported sources:**\n"
-            "• Google Drive\n"
-            "• Terabox / 1024Tera\n"
-            "• Direct download links (.mp4, .pdf, etc.)"
+            "❌ **No Supported Links!**\n\n"
+            "Supported: Google Drive, Terabox, Direct links"
         )
     
     status_msg = await message.reply_text(
-        f"📥 **Processing {len(supported_links)} Link(s)...**\n\n"
-        f"⏳ Please wait...",
+        f"📥 **Processing {len(supported_links)} Link(s)...**",
         reply_to_message_id=message.id
     )
     
@@ -184,7 +170,7 @@ async def process_user_links(client: Client, message: Message, is_group: bool = 
     for i, link in enumerate(supported_links, 1):
         try:
             await status_msg.edit_text(
-                f"📥 **Processing Link {i}/{len(supported_links)}**\n\n"
+                f"📥 **Processing {i}/{len(supported_links)}**\n\n"
                 f"🔗 `{link[:50]}...`\n"
                 f"⏳ Downloading..."
             )
@@ -203,24 +189,34 @@ async def process_user_links(client: Client, message: Message, is_group: bool = 
                 results['success'] += 1
                 if file_type:
                     results['file_types'][file_type] = results['file_types'].get(file_type, 0) + 1
+                
+                if not is_premium:
+                    try:
+                        await user_db.increment_usage(user_id)
+                    except:
+                        pass
             else:
                 results['failed'] += 1
             
-            if not is_premium and success:
-                try:
-                    await user_db.increment_usage(user_id)
-                except:
-                    pass
+            # Add delay between files to avoid flood
+            if i < len(supported_links):
+                await asyncio.sleep(Config.MESSAGE_DELAY)
         
         except Exception as e:
-            logger.error(f"Link processing error: {e}")
+            logger.error(f"Error: {e}")
             results['failed'] += 1
     
     await cleanup_user_dir(user_id)
     
+    # Send summary with inline button
     summary = generate_summary(results)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👨‍💻 Contact Owner", url=Config.OWNER_CONTACT)],
+        [InlineKeyboardButton("📢 Join Channel", url=Config.FORCE_SUB_LINK)]
+    ])
+    
     try:
-        await status_msg.edit_text(summary)
+        await status_msg.edit_text(summary, reply_markup=keyboard)
     except:
         pass
     
@@ -240,21 +236,18 @@ async def download_and_upload_link(
     reply_to_id: int,
     progress_message: Message
 ) -> tuple:
-    """Download and upload a single link"""
+    """Download and upload single link"""
     download_path = create_download_dir(user_id)
     file_path = None
     
     try:
-        logger.info(f"⬇️ Starting download: {url[:50]}...")
+        logger.info(f"⬇️ Downloading: {url[:50]}...")
         
         if is_gdrive_link(url):
-            logger.info("📁 Detected: Google Drive")
             success, file_path, error = await downloader.download_gdrive(url, download_path, progress_message)
         elif is_terabox_link(url):
-            logger.info("📁 Detected: Terabox")
             success, file_path, error = await downloader.download_terabox(url, download_path, progress_message)
         else:
-            logger.info("📁 Detected: Direct Link")
             success, file_path, error = await downloader.download_direct(url, download_path, progress_message)
         
         if not success or not file_path:
@@ -284,26 +277,14 @@ async def download_and_upload_link(
         try:
             settings = await user_db.get_settings(user_id)
             custom_thumbnail = settings.get("thumbnail")
-            custom_title = settings.get("title")
             target_chat = settings.get("chat_id") or chat_id
         except:
             custom_thumbnail = None
-            custom_title = None
             target_chat = chat_id
         
-        if custom_title:
-            try:
-                caption = custom_title.format(
-                    filename=filename,
-                    ext=extension,
-                    size=get_readable_file_size(file_size)
-                )
-            except:
-                caption = f"📁 **{filename}**\n📊 Size: {get_readable_file_size(file_size)}"
-        else:
-            caption = f"📁 **{filename}**\n📊 Size: {get_readable_file_size(file_size)}"
+        caption = f"📁 **{filename}**\n📊 Size: {get_readable_file_size(file_size)}"
         
-        logger.info(f"⬆️ Starting upload to {target_chat}...")
+        logger.info(f"⬆️ Uploading to {target_chat}...")
         
         success, sent_message, error = await uploader.upload_file(
             client=client,
@@ -312,7 +293,7 @@ async def download_and_upload_link(
             progress_message=progress_message,
             caption=caption,
             reply_to_message_id=reply_to_id if target_chat == chat_id else None,
-            message_thread_id=None,  # Not used in pyrogram 2.0.106
+            message_thread_id=None,
             custom_thumbnail=custom_thumbnail,
             file_type=file_type
         )
@@ -320,9 +301,13 @@ async def download_and_upload_link(
         await cleanup_file(file_path)
         
         if success:
-            logger.info(f"✅ Uploaded successfully!")
-            await progress_message.edit_text(f"✅ **Uploaded Successfully!**\n\n📁 `{filename}`")
+            logger.info("✅ Upload success!")
+            await progress_message.edit_text(f"✅ **Uploaded!**\n\n📁 `{filename}`")
             await uploader.send_log(client, user_id, username, url, filename, "success")
+            
+            # Add delay after successful upload
+            await asyncio.sleep(Config.MESSAGE_DELAY)
+            
             return True, file_type
         else:
             logger.error(f"❌ Upload failed: {error}")
@@ -346,4 +331,4 @@ async def download_and_upload_link(
         return False, None
 
 
-logger.info("✅ Link handler loaded successfully!")
+logger.info("✅ Link handler loaded!")
