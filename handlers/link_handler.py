@@ -19,122 +19,164 @@ from utils.helpers import (
 
 logger = logging.getLogger(__name__)
 
+# Initialize once
 downloader = Downloader()
 uploader = Uploader()
 
 # Force Subscribe Check
-async def force_sub_check(client: Client, user_id: int):
+async def check_force_sub(client: Client, user_id: int) -> bool:
     """Check if user has joined force subscribe channel"""
     try:
         member = await client.get_chat_member(Config.FORCE_SUB_CHANNEL, user_id)
-        if member.status in ["kicked", "banned"]:
+        if member.status in ["kicked", "banned", "left"]:
             return False
         return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Force sub check: {e}")
         return True
 
 
-# ============ PRIVATE CHAT HANDLER ============
-@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "setting", "cancel", "broadcast", "premium", "removepremium", "checkpremium"]))
-async def handle_private_text(client: Client, message: Message):
-    """Handle text messages in private chat"""
-    text = message.text
+# ============ LINK DETECTION FILTER ============
+async def link_filter_func(_, __, message: Message):
+    """Filter function to detect links"""
+    if not message.text:
+        return False
     
-    # Check if contains any link
-    if not any(x in text.lower() for x in ['http://', 'https://', 'drive.google', 'terabox', '1024tera']):
+    text = message.text.lower()
+    
+    # Check for any URL patterns
+    has_link = any([
+        'http://' in text,
+        'https://' in text,
+        'drive.google.com' in text,
+        'terabox' in text,
+        '1024tera' in text,
+    ])
+    
+    return has_link
+
+link_filter = filters.create(link_filter_func)
+
+
+# ============ PRIVATE CHAT - LINK HANDLER ============
+@Client.on_message(filters.private & filters.text & link_filter)
+async def private_link_handler(client: Client, message: Message):
+    """Handle links in private chat"""
+    logger.info(f"📥 Private link received from {message.from_user.id}: {message.text[:50]}...")
+    
+    # Skip if it's a command
+    if message.text.startswith('/'):
         return
     
-    await process_links(client, message, is_group=False)
+    await process_user_links(client, message, is_group=False)
 
 
-# ============ GROUP CHAT HANDLER ============
-@Client.on_message(filters.group & filters.text)
-async def handle_group_text(client: Client, message: Message):
-    """Handle text messages in groups"""
+# ============ GROUP CHAT - LINK HANDLER ============
+@Client.on_message(filters.group & filters.text & link_filter)
+async def group_link_handler(client: Client, message: Message):
+    """Handle links in group when bot is mentioned or replied to"""
     if not message.text:
         return
     
-    text = message.text
+    # Get bot info
+    bot = await client.get_me()
+    bot_username = f"@{bot.username}".lower() if bot.username else ""
     
-    # Check if bot is mentioned or replied to
-    bot_info = await client.get_me()
-    bot_username = f"@{bot_info.username}".lower()
+    # Check if bot is mentioned
+    is_mentioned = bot_username and bot_username in message.text.lower()
     
-    is_mentioned = bot_username in text.lower()
-    is_reply_to_bot = (
-        message.reply_to_message and 
-        message.reply_to_message.from_user and 
-        message.reply_to_message.from_user.id == bot_info.id
-    )
+    # Check if replied to bot
+    is_reply_to_bot = False
+    if message.reply_to_message:
+        if message.reply_to_message.from_user:
+            is_reply_to_bot = message.reply_to_message.from_user.id == bot.id
     
+    # Only process if mentioned or replied to
     if not (is_mentioned or is_reply_to_bot):
         return
     
-    # Check if contains any link
-    if not any(x in text.lower() for x in ['http://', 'https://', 'drive.google', 'terabox', '1024tera']):
-        return
-    
-    await process_links(client, message, is_group=True)
+    logger.info(f"📥 Group link received from {message.from_user.id}")
+    await process_user_links(client, message, is_group=True)
 
 
-# ============ MAIN LINK PROCESSOR ============
-async def process_links(client: Client, message: Message, is_group: bool = False):
-    """Process links from message"""
+# ============ MAIN PROCESSING FUNCTION ============
+async def process_user_links(client: Client, message: Message, is_group: bool = False):
+    """Process links from user message"""
     user_id = message.from_user.id
     username = message.from_user.username
-    first_name = message.from_user.first_name
+    first_name = message.from_user.first_name or "User"
     chat_id = message.chat.id
     
-    # Get topic ID if in group topic
+    logger.info(f"🔄 Processing links for user {user_id}")
+    
+    # Get topic ID for groups
     topic_id = None
-    if is_group and hasattr(message, 'message_thread_id') and message.message_thread_id:
-        topic_id = message.message_thread_id
+    if is_group:
+        topic_id = getattr(message, 'message_thread_id', None)
     
     # Add user to database
-    await db.add_user(user_id, username, first_name)
+    try:
+        await db.add_user(user_id, username, first_name)
+    except Exception as e:
+        logger.error(f"DB add user error: {e}")
     
     # Check if banned
-    if await db.is_user_banned(user_id):
-        return await message.reply_text("❌ You are banned from using this bot!")
+    try:
+        if await db.is_user_banned(user_id):
+            return await message.reply_text("❌ You are banned from using this bot!")
+    except Exception as e:
+        logger.error(f"Ban check error: {e}")
     
     # Check force subscribe (only in private)
     if not is_group:
-        if not await force_sub_check(client, user_id):
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Join Channel", url=Config.FORCE_SUB_LINK)],
-                [InlineKeyboardButton("🔄 Try Again", callback_data="check_sub")]
-            ])
-            return await message.reply_text(
-                "⚠️ **Please join our channel first!**\n\n"
-                f"🔗 {Config.FORCE_SUB_LINK}",
-                reply_markup=keyboard
-            )
+        try:
+            if not await check_force_sub(client, user_id):
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📢 Join Channel", url=Config.FORCE_SUB_LINK)],
+                    [InlineKeyboardButton("🔄 Try Again", callback_data="check_sub")]
+                ])
+                return await message.reply_text(
+                    "⚠️ **Please join our channel first!**\n\n"
+                    f"🔗 {Config.FORCE_SUB_LINK}",
+                    reply_markup=keyboard
+                )
+        except Exception as e:
+            logger.error(f"Force sub error: {e}")
     
     # Check daily limit
-    can_use, remaining = await user_db.can_use_bot(user_id)
-    is_premium = await user_db.is_premium(user_id)
+    try:
+        can_use, remaining = await user_db.can_use_bot(user_id)
+        is_premium = await user_db.is_premium(user_id)
+        
+        if not can_use:
+            return await message.reply_text(
+                "❌ **Daily Limit Reached!**\n\n"
+                f"You've used all {Config.FREE_DAILY_LIMIT} free tasks for today.\n\n"
+                "💎 Upgrade to Premium for unlimited access!",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👨‍💻 Get Premium", url=Config.OWNER_CONTACT)]
+                ])
+            )
+    except Exception as e:
+        logger.error(f"Limit check error: {e}")
+        is_premium = False
+        remaining = Config.FREE_DAILY_LIMIT
     
-    if not can_use:
-        return await message.reply_text(
-            "❌ **Daily Limit Reached!**\n\n"
-            f"You've used all {Config.FREE_DAILY_LIMIT} free tasks for today.\n\n"
-            "💎 Upgrade to Premium for unlimited access!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("👨‍💻 Get Premium", url=Config.OWNER_CONTACT)]
-            ])
-        )
-    
-    # Extract links
+    # Extract links from message
     links = extract_links_from_text(message.text)
+    logger.info(f"📎 Found {len(links)} links in message")
     
     if not links:
         return await message.reply_text("❌ No valid links found in your message!")
     
-    # Filter supported links
+    # Filter for supported links
     supported_links = []
     for link in links:
         if is_gdrive_link(link) or is_terabox_link(link) or is_direct_link(link):
             supported_links.append(link)
+            logger.info(f"✅ Supported link: {link[:50]}...")
+        else:
+            logger.info(f"❌ Unsupported link: {link[:50]}...")
     
     if not supported_links:
         return await message.reply_text(
@@ -142,190 +184,155 @@ async def process_links(client: Client, message: Message, is_group: bool = False
             "**Supported sources:**\n"
             "• Google Drive\n"
             "• Terabox / 1024Tera\n"
-            "• Direct download links"
+            "• Direct download links (.mp4, .pdf, etc.)"
         )
     
-    # Check max size limit
-    max_size, max_size_mb = await user_db.get_max_size(user_id)
-    
-    # Create tasks
-    tasks = []
-    for link in supported_links:
-        task = Task(
-            task_id=str(uuid.uuid4()),
-            user_id=user_id,
-            url=link,
-            chat_id=chat_id,
-            topic_id=topic_id,
-            reply_to_id=message.id
-        )
-        tasks.append(task)
-    
-    # Add tasks to queue
-    added = await queue_manager.add_multiple_tasks(tasks)
-    
-    if added == 0:
-        return await message.reply_text("❌ Failed to add tasks to queue!")
-    
-    # Increment usage for freemium users
-    if not is_premium:
-        for _ in range(min(added, remaining if remaining > 0 else 0)):
-            await user_db.increment_usage(user_id)
-    
-    # Get queue position
-    current_pos, total_pos = queue_manager.get_queue_position(user_id)
-    
-    # Send confirmation
+    # Send initial status
     status_msg = await message.reply_text(
-        f"📥 **{added} Task(s) Added to Queue!**\n\n"
-        f"📊 Position: {current_pos}/{total_pos}\n"
-        f"⏳ Processing will start shortly...",
+        f"📥 **Processing {len(supported_links)} Link(s)...**\n\n"
+        f"⏳ Please wait...",
         reply_to_message_id=message.id
     )
     
-    # Try to pin message in group
+    # Try to pin in group
     if is_group:
         try:
             await status_msg.pin(disable_notification=True)
-        except Exception as e:
-            logger.debug(f"Could not pin message: {e}")
+        except:
+            pass
     
-    # Start processing if not already running
-    if not queue_manager.is_processing(user_id):
-        asyncio.create_task(process_queue(client, user_id, status_msg, username))
-
-
-# ============ QUEUE PROCESSOR ============
-async def process_queue(client: Client, user_id: int, status_message: Message, username: str = None):
-    """Process user's download queue"""
-    queue_manager.set_processing(user_id, True)
-    
+    # Process each link
     results = {
-        'total': 0,
+        'total': len(supported_links),
         'success': 0,
         'failed': 0,
         'file_types': {}
     }
     
-    try:
-        while True:
-            # Check if cancelled
-            if queue_manager.is_cancelled(user_id):
-                queue_manager.clear_cancelled(user_id)
-                break
-            
-            # Get next task
-            task = await queue_manager.get_next_task(user_id)
-            if not task:
-                break
-            
-            results['total'] += 1
-            current_pos, total_pos = queue_manager.get_queue_position(user_id)
-            
+    for i, link in enumerate(supported_links, 1):
+        try:
             # Update status
-            try:
-                url_display = task.url[:50] + "..." if len(task.url) > 50 else task.url
-                await status_message.edit_text(
-                    f"📥 **Processing Tasks**\n\n"
-                    f"📊 Progress: {current_pos}/{total_pos}\n"
-                    f"🔗 Current: `{url_display}`\n"
-                    f"⏳ Please wait..."
-                )
-            except Exception as e:
-                logger.debug(f"Status update error: {e}")
+            await status_msg.edit_text(
+                f"📥 **Processing Link {i}/{len(supported_links)}**\n\n"
+                f"🔗 `{link[:50]}...`\n"
+                f"⏳ Downloading..."
+            )
             
-            # Process task
-            success, file_type = await process_single_task(client, task, status_message, username)
+            # Process this link
+            success, file_type = await download_and_upload_link(
+                client=client,
+                url=link,
+                user_id=user_id,
+                username=username,
+                chat_id=chat_id,
+                topic_id=topic_id,
+                reply_to_id=message.id,
+                progress_message=status_msg
+            )
             
             if success:
                 results['success'] += 1
                 if file_type:
                     results['file_types'][file_type] = results['file_types'].get(file_type, 0) + 1
-                queue_manager.mark_completed(user_id, task.task_id, True)
             else:
                 results['failed'] += 1
-                queue_manager.mark_completed(user_id, task.task_id, False)
             
-            # Cleanup after each task
-            await cleanup_user_dir(user_id)
-        
-        # Send summary
-        summary = generate_summary(results)
-        
-        try:
-            await status_message.edit_text(summary)
-            
-            # Unpin in group
-            if status_message.chat.type != "private":
+            # Increment usage for free users
+            if not is_premium and success:
                 try:
-                    await status_message.unpin()
+                    await user_db.increment_usage(user_id)
                 except:
                     pass
+        
         except Exception as e:
-            logger.debug(f"Summary update error: {e}")
+            logger.error(f"Link processing error: {e}")
+            results['failed'] += 1
     
-    except Exception as e:
-        logger.error(f"Queue processing error: {e}")
+    # Cleanup user directory
+    await cleanup_user_dir(user_id)
+    
+    # Send final summary
+    summary = generate_summary(results)
+    try:
+        await status_msg.edit_text(summary)
+    except:
+        pass
+    
+    # Unpin in group
+    if is_group:
         try:
-            await status_message.edit_text(f"❌ Error: {str(e)}")
+            await status_msg.unpin()
         except:
             pass
-    
-    finally:
-        queue_manager.set_processing(user_id, False)
-        queue_manager.clear_user_tasks(user_id)
-        # Final cleanup
-        await cleanup_user_dir(user_id)
 
 
-# ============ SINGLE TASK PROCESSOR ============
-async def process_single_task(client: Client, task: Task, progress_message: Message, username: str = None) -> tuple:
-    """Process a single download task"""
-    user_id = task.user_id
-    url = task.url
+# ============ DOWNLOAD AND UPLOAD SINGLE LINK ============
+async def download_and_upload_link(
+    client: Client,
+    url: str,
+    user_id: int,
+    username: str,
+    chat_id: int,
+    topic_id: int,
+    reply_to_id: int,
+    progress_message: Message
+) -> tuple:
+    """Download and upload a single link"""
     download_path = create_download_dir(user_id)
     file_path = None
     
     try:
-        # Determine link type and download
-        task.status = "downloading"
+        logger.info(f"⬇️ Starting download: {url[:50]}...")
         
+        # Determine link type and download
         if is_gdrive_link(url):
+            logger.info("📁 Detected: Google Drive")
             success, file_path, error = await downloader.download_gdrive(url, download_path, progress_message)
         elif is_terabox_link(url):
+            logger.info("📁 Detected: Terabox")
             success, file_path, error = await downloader.download_terabox(url, download_path, progress_message)
         else:
+            logger.info("📁 Detected: Direct Link")
             success, file_path, error = await downloader.download_direct(url, download_path, progress_message)
         
         if not success or not file_path:
+            logger.error(f"❌ Download failed: {error}")
             await progress_message.edit_text(f"❌ **Download Failed!**\n\n`{error}`")
             await uploader.send_log(client, user_id, username, url, "Unknown", "failed", error)
             return False, None
         
+        logger.info(f"✅ Downloaded: {file_path}")
+        
         # Get file info
         filename = os.path.basename(file_path)
+        file_size = os.path.getsize(file_path)
         extension = get_file_extension(filename)
         file_type = get_file_type(extension)
-        task.filename = filename
         
-        # Check file size
-        file_size = os.path.getsize(file_path)
+        logger.info(f"📊 File: {filename}, Size: {get_readable_file_size(file_size)}, Type: {file_type}")
+        
+        # Check file size limit
         max_size, max_size_mb = await user_db.get_max_size(user_id)
         
         if file_size > max_size:
             await cleanup_file(file_path)
-            error_msg = f"File too large! Max: {max_size_mb}MB, File: {get_readable_file_size(file_size)}"
+            error_msg = f"File too large! Max: {max_size_mb}MB"
             await progress_message.edit_text(f"❌ {error_msg}")
             await uploader.send_log(client, user_id, username, url, filename, "failed", error_msg)
             return False, None
         
         # Get user settings
-        settings = await user_db.get_settings(user_id)
-        custom_thumbnail = settings.get("thumbnail")
-        custom_title = settings.get("title")
-        target_chat = settings.get("chat_id") or task.chat_id
+        try:
+            settings = await user_db.get_settings(user_id)
+            custom_thumbnail = settings.get("thumbnail")
+            custom_title = settings.get("title")
+            target_chat = settings.get("chat_id") or chat_id
+        except:
+            custom_thumbnail = None
+            custom_title = None
+            target_chat = chat_id
         
-        # Format caption
+        # Create caption
         if custom_title:
             try:
                 caption = custom_title.format(
@@ -339,28 +346,30 @@ async def process_single_task(client: Client, task: Task, progress_message: Mess
             caption = f"📁 **{filename}**\n📊 Size: {get_readable_file_size(file_size)}"
         
         # Upload file
-        task.status = "uploading"
+        logger.info(f"⬆️ Starting upload to {target_chat}...")
         
         success, sent_message, error = await uploader.upload_file(
-            client,
-            file_path,
-            target_chat,
-            progress_message,
+            client=client,
+            file_path=file_path,
+            chat_id=target_chat,
+            progress_message=progress_message,
             caption=caption,
-            reply_to_message_id=task.reply_to_id if target_chat == task.chat_id else None,
-            message_thread_id=task.topic_id,
+            reply_to_message_id=reply_to_id if target_chat == chat_id else None,
+            message_thread_id=topic_id,
             custom_thumbnail=custom_thumbnail,
             file_type=file_type
         )
         
-        # Cleanup file immediately after upload
+        # Cleanup file immediately
         await cleanup_file(file_path)
         
         if success:
+            logger.info(f"✅ Uploaded successfully!")
             await progress_message.edit_text(f"✅ **Uploaded Successfully!**\n\n📁 `{filename}`")
             await uploader.send_log(client, user_id, username, url, filename, "success")
             return True, file_type
         else:
+            logger.error(f"❌ Upload failed: {error}")
             await progress_message.edit_text(f"❌ **Upload Failed!**\n\n`{error}`")
             await uploader.send_log(client, user_id, username, url, filename, "failed", error)
             return False, None
@@ -368,16 +377,18 @@ async def process_single_task(client: Client, task: Task, progress_message: Mess
     except asyncio.CancelledError:
         if file_path:
             await cleanup_file(file_path)
-        await cleanup_user_dir(user_id)
         return False, None
     
     except Exception as e:
-        logger.error(f"Task processing error: {e}")
+        logger.error(f"❌ Error: {e}")
         if file_path:
             await cleanup_file(file_path)
-        await cleanup_user_dir(user_id)
         try:
             await progress_message.edit_text(f"❌ **Error:** `{str(e)}`")
         except:
             pass
         return False, None
+
+
+# Log when handler is loaded
+logger.info("✅ Link handler loaded successfully!")
