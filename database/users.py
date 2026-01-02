@@ -1,13 +1,31 @@
-from database.mongodb import Database
 from config import Config
 from datetime import datetime, timedelta
 import logging
+import motor.motor_asyncio
 
 logger = logging.getLogger(__name__)
 
-class UserDatabase(Database):
+class UserDatabase:
+    def __init__(self):
+        self.client = None
+        self.db = None
     
-    # Premium Methods
+    async def connect(self):
+        """Connect to MongoDB"""
+        try:
+            self.client = motor.motor_asyncio.AsyncIOMotorClient(Config.MONGO_URI)
+            self.db = self.client[Config.DB_NAME]
+            logger.info("✅ UserDatabase connected!")
+            return True
+        except Exception as e:
+            logger.error(f"❌ UserDatabase connection error: {e}")
+            return False
+    
+    async def close(self):
+        """Close connection"""
+        if self.client:
+            self.client.close()
+    
     async def add_premium(self, user_id: int, days: int):
         """Add premium to user"""
         try:
@@ -41,7 +59,6 @@ class UserDatabase(Database):
     async def is_premium(self, user_id: int):
         """Check if user is premium"""
         try:
-            # Check if owner
             if user_id in Config.OWNER_IDS:
                 return True
             
@@ -49,11 +66,9 @@ class UserDatabase(Database):
             if not premium:
                 return False
             
-            # Check expiry
             if premium.get("expiry_date") and premium["expiry_date"] > datetime.utcnow():
                 return True
             else:
-                # Remove expired premium
                 await self.remove_premium(user_id)
                 return False
         except Exception as e:
@@ -68,7 +83,6 @@ class UserDatabase(Database):
             logger.error(f"Error getting premium info: {e}")
             return None
     
-    # Daily Usage Methods
     async def get_daily_usage(self, user_id: int):
         """Get user's daily usage"""
         try:
@@ -97,11 +111,10 @@ class UserDatabase(Database):
             return False
     
     async def can_use_bot(self, user_id: int):
-        """Check if user can use bot (within daily limit)"""
+        """Check if user can use bot"""
         try:
-            # Check if premium or owner
             if await self.is_premium(user_id):
-                return True, -1  # -1 means unlimited
+                return True, -1
             
             usage = await self.get_daily_usage(user_id)
             remaining = Config.FREE_DAILY_LIMIT - usage
@@ -120,7 +133,6 @@ class UserDatabase(Database):
             logger.error(f"Error getting max size: {e}")
             return Config.FREE_MAX_SIZE, Config.FREE_MAX_SIZE_MB
     
-    # Settings Methods
     async def get_settings(self, user_id: int):
         """Get user settings"""
         try:
@@ -142,7 +154,7 @@ class UserDatabase(Database):
         try:
             await self.db.settings.update_one(
                 {"user_id": user_id},
-                {"$set": {"chat_id": chat_id}},
+                {"$set": {"chat_id": chat_id, "user_id": user_id}},
                 upsert=True
             )
             return True
@@ -155,7 +167,7 @@ class UserDatabase(Database):
         try:
             await self.db.settings.update_one(
                 {"user_id": user_id},
-                {"$set": {"title": title}},
+                {"$set": {"title": title, "user_id": user_id}},
                 upsert=True
             )
             return True
@@ -168,7 +180,7 @@ class UserDatabase(Database):
         try:
             await self.db.settings.update_one(
                 {"user_id": user_id},
-                {"$set": {"thumbnail": thumbnail}},
+                {"$set": {"thumbnail": thumbnail, "user_id": user_id}},
                 upsert=True
             )
             return True
