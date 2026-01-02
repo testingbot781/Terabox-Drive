@@ -467,4 +467,4 @@ class Downloader:
         
         except Exception as e:
             logger.error(f"Direct download error: {e}")
-            re
+            return False, None, str(e)
