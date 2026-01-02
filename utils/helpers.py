@@ -12,43 +12,72 @@ logger = logging.getLogger(__name__)
 
 def get_file_extension(filename: str) -> str:
     """Get file extension from filename"""
+    if not filename:
+        return ''
     if '.' in filename:
-        return '.' + filename.rsplit('.', 1)[-1].lower()
+        ext = '.' + filename.rsplit('.', 1)[-1].lower()
+        # Validate extension length
+        if len(ext) <= 6:
+            return ext
     return ''
 
 def get_file_type(extension: str) -> str:
     """Determine file type from extension"""
+    if not extension:
+        return "document"
+    
     ext = extension.lower()
     
-    if ext in Config.VIDEO_EXTENSIONS:
+    # Video
+    video_exts = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpeg', '.mpg', '.ts', '.vob']
+    if ext in video_exts:
         return "video"
-    elif ext in Config.AUDIO_EXTENSIONS:
+    
+    # Audio
+    audio_exts = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.opus', '.amr']
+    if ext in audio_exts:
         return "audio"
-    elif ext in Config.IMAGE_EXTENSIONS:
+    
+    # Image
+    image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.ico', '.svg']
+    if ext in image_exts:
         return "image"
-    elif ext == '.pdf':
+    
+    # PDF
+    if ext == '.pdf':
         return "pdf"
-    elif ext == '.apk':
+    
+    # APK
+    if ext == '.apk':
         return "apk"
-    elif ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
+    
+    # Archive
+    archive_exts = ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz']
+    if ext in archive_exts:
         return "archive"
-    else:
-        return "document"
+    
+    return "document"
 
 def sanitize_filename(filename: str) -> str:
     """Sanitize filename to remove invalid characters"""
     if not filename:
         return "downloaded_file"
     
+    # Decode URL encoding
+    try:
+        filename = unquote(filename)
+    except:
+        pass
+    
     # Remove invalid characters
-    invalid_chars = '<>:"/\\|?*\x00'
+    invalid_chars = '<>:"/\\|?*\x00\n\r\t'
     for char in invalid_chars:
         filename = filename.replace(char, '_')
     
     # Remove leading/trailing spaces and dots
-    filename = filename.strip('. ')
+    filename = filename.strip('. \t\n\r')
     
-    # Limit filename length
+    # Limit filename length but preserve extension
     if len(filename) > 200:
         name, ext = os.path.splitext(filename)
         filename = name[:200-len(ext)] + ext
@@ -123,7 +152,12 @@ def is_direct_link(url: str) -> bool:
     try:
         parsed = urlparse(url)
         path = parsed.path.lower()
-        direct_extensions = ['.mp4', '.mkv', '.avi', '.pdf', '.zip', '.rar', '.mp3', '.jpg', '.png', '.apk', '.mov', '.webm']
+        direct_extensions = [
+            '.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.3gp',
+            '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a',
+            '.pdf', '.zip', '.rar', '.7z', '.apk',
+            '.jpg', '.jpeg', '.png', '.gif', '.webp'
+        ]
         return any(path.endswith(ext) for ext in direct_extensions)
     except:
         return False
@@ -157,10 +191,10 @@ async def cleanup_file(file_path: str):
         if file_path and os.path.exists(file_path):
             if os.path.isfile(file_path):
                 os.remove(file_path)
-                logger.info(f"Cleaned up file: {file_path}")
+                logger.info(f"🗑️ Cleaned: {file_path}")
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
-                logger.info(f"Cleaned up directory: {file_path}")
+                logger.info(f"🗑️ Cleaned dir: {file_path}")
     except Exception as e:
         logger.error(f"Cleanup error: {e}")
 
@@ -170,7 +204,7 @@ async def cleanup_user_dir(user_id: int):
         user_dir = os.path.join(Config.DOWNLOAD_DIR, str(user_id))
         if os.path.exists(user_dir):
             shutil.rmtree(user_dir)
-            logger.info(f"Cleaned up user directory: {user_dir}")
+            logger.info(f"🗑️ Cleaned user dir: {user_dir}")
     except Exception as e:
         logger.error(f"User dir cleanup error: {e}")
 
