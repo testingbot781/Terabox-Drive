@@ -5,7 +5,6 @@ from threading import Thread
 from flask import Flask
 from pyrogram import Client, idle
 from config import Config
-from database import db, user_db
 
 # Configure logging
 logging.basicConfig(
@@ -41,16 +40,21 @@ app = Client(
     api_id=Config.API_ID,
     api_hash=Config.API_HASH,
     bot_token=Config.BOT_TOKEN,
-    workers=100,
+    workers=50,
     plugins=dict(root="handlers")
 )
 
 async def main():
     """Main function to start the bot"""
     
+    # Import database here to avoid circular imports
+    from database import db, user_db
+    
     # Connect to MongoDB
+    logger.info("🔄 Connecting to MongoDB...")
     await db.connect()
     await user_db.connect()
+    logger.info("✅ MongoDB connected!")
     
     # Start Flask in a separate thread
     flask_thread = Thread(target=run_flask, daemon=True)
@@ -58,10 +62,12 @@ async def main():
     logger.info(f"🌐 Flask server started on port {Config.PORT}")
     
     # Start the bot
+    logger.info("🔄 Starting Telegram bot...")
     await app.start()
     
     bot_info = await app.get_me()
     logger.info(f"✅ Bot started: @{bot_info.username}")
+    logger.info(f"🆔 Bot ID: {bot_info.id}")
     
     # Send startup message to log channel
     try:
@@ -72,15 +78,21 @@ async def main():
             f"🆔 **Bot ID:** `{bot_info.id}`\n"
             f"📅 **Time:** {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+        logger.info("📢 Startup message sent to log channel")
     except Exception as e:
         logger.error(f"Failed to send startup message: {e}")
+    
+    # Log loaded handlers
+    logger.info("📋 Handlers should be loaded from 'handlers' folder")
     
     await idle()
     
     # Cleanup
+    logger.info("🔄 Shutting down...")
     await db.close()
     await user_db.close()
     await app.stop()
+    logger.info("👋 Bot stopped!")
 
 if __name__ == "__main__":
     logger.info("🚀 Starting Telegram Downloader Bot...")
