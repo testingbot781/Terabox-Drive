@@ -116,7 +116,6 @@ class Downloader:
         
         return filename
     
-    # ============ DOWNLOAD FILE ============
     async def download_file(
         self,
         url: str,
@@ -146,14 +145,12 @@ class Downloader:
                 total_size = int(resp.headers.get('Content-Length', 0))
                 content_type = resp.headers.get('Content-Type', '')
                 
-                # Get filename from headers
                 cd = resp.headers.get('Content-Disposition', '')
                 if 'filename=' in cd:
                     matches = re.findall(r'filename[*]?=["\']?(?:UTF-8\'\')?([^"\';\n]+)', cd)
                     if matches:
                         filename = sanitize_filename(unquote(matches[0]))
                 
-                # Get from URL if needed
                 if filename == "downloading" or filename == "downloaded_file":
                     url_path = urlparse(str(resp.url)).path
                     if url_path:
@@ -161,21 +158,18 @@ class Downloader:
                         if url_filename and len(url_filename) > 1:
                             filename = sanitize_filename(unquote(url_filename))
                 
-                # Ensure extension
                 filename = self.ensure_extension(filename, content_type, str(resp.url))
                 
                 logger.info(f"📥 Downloading: {filename} ({total_size} bytes)")
                 
                 file_path = os.path.join(download_path, filename)
                 
-                # Unique filename
                 base, ext = os.path.splitext(file_path)
                 counter = 1
                 while os.path.exists(file_path):
                     file_path = f"{base}_{counter}{ext}"
                     counter += 1
                 
-                # Download
                 downloaded = 0
                 start_time = time.time()
                 
@@ -213,7 +207,6 @@ class Downloader:
             logger.error(f"Download error: {e}")
             return False, None, str(e)
     
-    # ============ GOOGLE DRIVE ============
     async def get_gdrive_info(self, file_id: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
         """Get Google Drive file info"""
         try:
@@ -257,17 +250,12 @@ class Downloader:
             return None, None, None
     
     async def download_gdrive(self, url: str, download_path: str, progress_message) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Download from Google Drive (including usercontent and storage links)"""
+        """Download from Google Drive"""
         try:
-            # Check if it's a direct download link (usercontent or storage)
             if 'drive.usercontent.google.com' in url or 'storage.googleapis.com' in url:
                 logger.info("📁 Detected: Google Direct Download Link")
-                return await self.download_file(
-                    url, download_path, progress_message,
-                    "google_file", {}
-                )
+                return await self.download_file(url, download_path, progress_message, "google_file", {})
             
-            # Regular Google Drive link
             file_id = extract_gdrive_id(url)
             if not file_id:
                 return False, None, "Invalid Google Drive URL"
@@ -288,9 +276,8 @@ class Downloader:
             logger.error(f"GDrive download error: {e}")
             return False, None, str(e)
     
-    # ============ TERABOX ============
-    async def get_terabox_info(self, url: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
-        """Get Terabox download info"""
+    async def get_terabox_file_info(self, url: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+        """Get single Terabox file info"""
         try:
             session = await self.get_session()
             
@@ -310,7 +297,6 @@ class Downloader:
                 
                 text = await resp.text()
                 
-                # Find download link
                 download_patterns = [
                     r'"dlink":"([^"]+)"',
                     r'"downloadLink":"([^"]+)"',
@@ -326,7 +312,6 @@ class Downloader:
                             break
                         download_url = None
                 
-                # Find filename
                 filename_patterns = [
                     r'"server_filename":"([^"]+)"',
                     r'"filename":"([^"]+)"',
@@ -342,11 +327,9 @@ class Downloader:
                             filename = fname
                             break
                 
-                # Ensure extension
                 if '.' not in filename:
                     filename = f"{filename}.mp4"
                 
-                # Get size
                 size = None
                 size_match = re.search(r'"size":(\d+)', text)
                 if size_match:
@@ -358,19 +341,74 @@ class Downloader:
             logger.error(f"Terabox info error: {e}")
             return None, "terabox_file.mp4", None
     
-    async def download_terabox(self, url: str, download_path: str, progress_message) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Download from Terabox"""
+    async def get_terabox_folder_files(self, url: str) -> List[Dict]:
+        """Get list of files from Terabox folder"""
+        files = []
         try:
-            # Check if it's a folder link
-            if 'filelist' in url.lower() and 'path=' in url.lower():
-                logger.info("📁 Detected: Terabox Folder - Downloading as single file")
-                # Don't use recursive folder download - just try to get the file
+            session = await self.get_session()
             
-            download_url, filename, size = await self.get_terabox_info(url)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://www.terabox.com/',
+            }
+            
+            if Config.TERABOX_COOKIE:
+                headers['Cookie'] = Config.TERABOX_COOKIE
+            
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                
+                # Try multiple patterns to find file list
+                list_patterns = [
+                    r'"list":\s*(\[.*?\])',
+                    r'"file_list":\s*(\[.*?\])',
+                ]
+                
+                for pattern in list_patterns:
+                    list_match = re.search(pattern, text, re.DOTALL)
+                    if list_match:
+                        try:
+                            file_list = json.loads(list_match.group(1))
+                            for item in file_list:
+                                if item.get('isdir') == 0 or item.get('is_dir') == 0:
+                                    fname = item.get('server_filename') or item.get('filename') or item.get('name') or 'unknown'
+                                    
+                                    # Ensure extension
+                                    if '.' not in fname:
+                                        fname = f"{fname}.mp4"
+                                    
+                                    files.append({
+                                        'filename': sanitize_filename(fname),
+                                        'size': item.get('size', 0),
+                                        'dlink': item.get('dlink', ''),
+                                        'path': item.get('path', ''),
+                                        'fs_id': item.get('fs_id', '')
+                                    })
+                            break
+                        except json.JSONDecodeError:
+                            continue
+        
+        except Exception as e:
+            logger.error(f"Terabox folder error: {e}")
+        
+        return files
+    
+    async def download_terabox(self, url: str, download_path: str, progress_message) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Download from Terabox - returns single file or list of files for folder"""
+        try:
+            # Check if folder link
+            is_folder = 'filelist' in url.lower() and 'path=' in url.lower()
+            
+            if is_folder:
+                logger.info("📁 Detected: Terabox Folder")
+                # Return special marker for folder
+                return True, "TERABOX_FOLDER:" + url, None
+            
+            # Single file download
+            download_url, filename, size = await self.get_terabox_file_info(url)
             
             if not download_url:
-                # Try direct download
-                logger.info("📁 Trying direct Terabox download...")
+                logger.info("📁 No dlink found, trying direct download...")
                 headers = {'Referer': 'https://www.terabox.com/'}
                 if Config.TERABOX_COOKIE:
                     headers['Cookie'] = Config.TERABOX_COOKIE
@@ -393,6 +431,28 @@ class Downloader:
             logger.error(f"Terabox download error: {e}")
             return False, None, str(e)
     
+    async def download_terabox_single_file(self, file_info: Dict, download_path: str, progress_message) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Download single file from Terabox folder"""
+        try:
+            dlink = file_info.get('dlink', '')
+            filename = file_info.get('filename', 'terabox_file.mp4')
+            
+            if not dlink:
+                return False, None, "No download link available"
+            
+            headers = {'Referer': 'https://www.terabox.com/'}
+            if Config.TERABOX_COOKIE:
+                headers['Cookie'] = Config.TERABOX_COOKIE
+            
+            return await self.download_file(
+                dlink, download_path, progress_message,
+                filename, headers
+            )
+        
+        except Exception as e:
+            logger.error(f"Terabox single file error: {e}")
+            return False, None, str(e)
+    
     async def download_direct(self, url: str, download_path: str, progress_message) -> Tuple[bool, Optional[str], Optional[str]]:
         """Download from direct link"""
         try:
@@ -407,4 +467,4 @@ class Downloader:
         
         except Exception as e:
             logger.error(f"Direct download error: {e}")
-            return False, None, str(e)
+            re
