@@ -2,7 +2,6 @@ import os
 import time
 import logging
 import asyncio
-import subprocess
 from typing import Optional, Tuple
 from pyrogram import Client
 from pyrogram.types import Message
@@ -42,12 +41,10 @@ class Uploader:
                 import json
                 data = json.loads(stdout.decode())
                 
-                # Get duration
                 duration = 0
                 if 'format' in data and 'duration' in data['format']:
                     duration = int(float(data['format']['duration']))
                 
-                # Get video stream info
                 width = 0
                 height = 0
                 for stream in data.get('streams', []):
@@ -63,7 +60,7 @@ class Uploader:
             
             return 0, 0, 0
         except Exception as e:
-            logger.error(f"Video metadata error: {e}")
+            logger.debug(f"Video metadata error: {e}")
             return 0, 0, 0
     
     async def get_audio_duration(self, file_path: str) -> int:
@@ -128,11 +125,14 @@ class Uploader:
             
             sent_message = None
             
+            # For topics, use reply_to_message_id
+            # message_thread_id is not supported in pyrogram 2.0.106
+            reply_id = reply_to_message_id
+            
             # ============ UPLOAD AS VIDEO ============
             if file_type == "video":
                 logger.info("🎬 Uploading as VIDEO (playable)")
                 
-                # Get video metadata
                 duration, width, height = await self.get_video_metadata(file_path)
                 
                 try:
@@ -144,22 +144,19 @@ class Uploader:
                         width=width,
                         height=height,
                         thumb=thumbnail,
-                        supports_streaming=True,  # IMPORTANT: Makes video playable!
-                        reply_to_message_id=reply_to_message_id,
-                        message_thread_id=message_thread_id,
+                        supports_streaming=True,
+                        reply_to_message_id=reply_id,
                         progress=progress_callback
                     )
                     logger.info("✅ Video uploaded successfully!")
                 except Exception as e:
                     logger.error(f"Video upload failed, trying as document: {e}")
-                    # Fallback to document
                     sent_message = await client.send_document(
                         chat_id=chat_id,
                         document=file_path,
                         caption=caption,
                         thumb=thumbnail,
-                        reply_to_message_id=reply_to_message_id,
-                        message_thread_id=message_thread_id,
+                        reply_to_message_id=reply_id,
                         progress=progress_callback
                     )
             
@@ -176,8 +173,7 @@ class Uploader:
                         caption=caption,
                         duration=duration,
                         thumb=thumbnail,
-                        reply_to_message_id=reply_to_message_id,
-                        message_thread_id=message_thread_id,
+                        reply_to_message_id=reply_id,
                         progress=progress_callback
                     )
                 except Exception as e:
@@ -187,8 +183,7 @@ class Uploader:
                         document=file_path,
                         caption=caption,
                         thumb=thumbnail,
-                        reply_to_message_id=reply_to_message_id,
-                        message_thread_id=message_thread_id,
+                        reply_to_message_id=reply_id,
                         progress=progress_callback
                     )
             
@@ -196,14 +191,13 @@ class Uploader:
             elif file_type == "image":
                 logger.info("🖼️ Uploading as IMAGE")
                 
-                if file_size < 10 * 1024 * 1024:  # Under 10 MB
+                if file_size < 10 * 1024 * 1024:
                     try:
                         sent_message = await client.send_photo(
                             chat_id=chat_id,
                             photo=file_path,
                             caption=caption,
-                            reply_to_message_id=reply_to_message_id,
-                            message_thread_id=message_thread_id,
+                            reply_to_message_id=reply_id,
                             progress=progress_callback
                         )
                     except:
@@ -212,8 +206,7 @@ class Uploader:
                             document=file_path,
                             caption=caption,
                             thumb=thumbnail,
-                            reply_to_message_id=reply_to_message_id,
-                            message_thread_id=message_thread_id,
+                            reply_to_message_id=reply_id,
                             progress=progress_callback
                         )
                 else:
@@ -222,8 +215,7 @@ class Uploader:
                         document=file_path,
                         caption=caption,
                         thumb=thumbnail,
-                        reply_to_message_id=reply_to_message_id,
-                        message_thread_id=message_thread_id,
+                        reply_to_message_id=reply_id,
                         progress=progress_callback
                     )
             
@@ -236,8 +228,7 @@ class Uploader:
                     document=file_path,
                     caption=caption,
                     thumb=thumbnail,
-                    reply_to_message_id=reply_to_message_id,
-                    message_thread_id=message_thread_id,
+                    reply_to_message_id=reply_id,
                     progress=progress_callback
                 )
             
