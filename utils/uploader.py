@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import asyncio
+import subprocess
 from typing import Optional, Tuple
 from pyrogram import Client
 from pyrogram.types import Message
@@ -17,15 +18,15 @@ class Uploader:
         self.progress = Progress()
         self.thumbnail_gen = ThumbnailGenerator()
     
-    async def get_video_info(self, file_path: str) -> Tuple[int, int, int]:
-        """Get video duration, width, height"""
+    async def get_video_metadata(self, file_path: str) -> Tuple[int, int, int]:
+        """Get video duration, width, height using ffprobe"""
         try:
             cmd = [
-                'ffprobe', '-v', 'error',
-                '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height',
-                '-show_entries', 'format=duration',
-                '-of', 'json',
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
                 file_path
             ]
             
@@ -41,16 +42,28 @@ class Uploader:
                 import json
                 data = json.loads(stdout.decode())
                 
-                duration = int(float(data.get('format', {}).get('duration', 0)))
-                streams = data.get('streams', [{}])
-                width = streams[0].get('width', 0) if streams else 0
-                height = streams[0].get('height', 0) if streams else 0
+                # Get duration
+                duration = 0
+                if 'format' in data and 'duration' in data['format']:
+                    duration = int(float(data['format']['duration']))
                 
+                # Get video stream info
+                width = 0
+                height = 0
+                for stream in data.get('streams', []):
+                    if stream.get('codec_type') == 'video':
+                        width = stream.get('width', 0)
+                        height = stream.get('height', 0)
+                        if 'duration' in stream and duration == 0:
+                            duration = int(float(stream['duration']))
+                        break
+                
+                logger.info(f"📊 Video metadata: {duration}s, {width}x{height}")
                 return duration, width, height
             
             return 0, 0, 0
         except Exception as e:
-            logger.debug(f"Video info error: {e}")
+            logger.error(f"Video metadata error: {e}")
             return 0, 0, 0
     
     async def get_audio_duration(self, file_path: str) -> int:
@@ -76,7 +89,7 @@ class Uploader:
         custom_thumbnail: str = None,
         file_type: str = "document"
     ) -> Tuple[bool, Optional[Message], Optional[str]]:
-        """Upload file to Telegram"""
+        """Upload file to Telegram - Videos are PLAYABLE!"""
         try:
             if not os.path.exists(file_path):
                 return False, None, "File not found"
@@ -84,12 +97,16 @@ class Uploader:
             filename = os.path.basename(file_path)
             file_size = os.path.getsize(file_path)
             
+            logger.info(f"⬆️ Uploading: {filename} ({get_readable_file_size(file_size)}) as {file_type}")
+            
             if caption is None:
                 caption = f"📁 **{filename}**\n📊 Size: {get_readable_file_size(file_size)}"
             
             # Generate thumbnail
-            thumbnail = custom_thumbnail
-            if not thumbnail:
+            thumbnail = None
+            if custom_thumbnail and os.path.exists(custom_thumbnail):
+                thumbnail = custom_thumbnail
+            else:
                 thumbnail = await self.thumbnail_gen.generate_thumbnail(file_path, file_type)
             
             # Progress callback
@@ -111,61 +128,117 @@ class Uploader:
             
             sent_message = None
             
-            # Base kwargs
-            upload_kwargs = {
-                'chat_id': chat_id,
-                'caption': caption,
-                'progress': progress_callback,
-            }
-            
-            if reply_to_message_id:
-                upload_kwargs['reply_to_message_id'] = reply_to_message_id
-            
-            if message_thread_id:
-                upload_kwargs['message_thread_id'] = message_thread_id
-            
-            # Upload based on file type
+            # ============ UPLOAD AS VIDEO ============
             if file_type == "video":
-                duration, width, height = await self.get_video_info(file_path)
+                logger.info("🎬 Uploading as VIDEO (playable)")
                 
-                sent_message = await client.send_video(
-                    **upload_kwargs,
-                    video=file_path,
-                    thumb=thumbnail,
-                    duration=duration,
-                    width=width,
-                    height=height,
-                    supports_streaming=True  # Makes video playable!
-                )
+                # Get video metadata
+                duration, width, height = await self.get_video_metadata(file_path)
+                
+                try:
+                    sent_message = await client.send_video(
+                        chat_id=chat_id,
+                        video=file_path,
+                        caption=caption,
+                        duration=duration,
+                        width=width,
+                        height=height,
+                        thumb=thumbnail,
+                        supports_streaming=True,  # IMPORTANT: Makes video playable!
+                        reply_to_message_id=reply_to_message_id,
+                        message_thread_id=message_thread_id,
+                        progress=progress_callback
+                    )
+                    logger.info("✅ Video uploaded successfully!")
+                except Exception as e:
+                    logger.error(f"Video upload failed, trying as document: {e}")
+                    # Fallback to document
+                    sent_message = await client.send_document(
+                        chat_id=chat_id,
+                        document=file_path,
+                        caption=caption,
+                        thumb=thumbnail,
+                        reply_to_message_id=reply_to_message_id,
+                        message_thread_id=message_thread_id,
+                        progress=progress_callback
+                    )
             
+            # ============ UPLOAD AS AUDIO ============
             elif file_type == "audio":
+                logger.info("🎵 Uploading as AUDIO")
+                
                 duration = await self.get_audio_duration(file_path)
                 
-                sent_message = await client.send_audio(
-                    **upload_kwargs,
-                    audio=file_path,
-                    thumb=thumbnail,
-                    duration=duration
-                )
-            
-            elif file_type == "image":
-                if file_size < 10 * 1024 * 1024:
-                    sent_message = await client.send_photo(
-                        **upload_kwargs,
-                        photo=file_path
+                try:
+                    sent_message = await client.send_audio(
+                        chat_id=chat_id,
+                        audio=file_path,
+                        caption=caption,
+                        duration=duration,
+                        thumb=thumbnail,
+                        reply_to_message_id=reply_to_message_id,
+                        message_thread_id=message_thread_id,
+                        progress=progress_callback
                     )
+                except Exception as e:
+                    logger.error(f"Audio upload failed: {e}")
+                    sent_message = await client.send_document(
+                        chat_id=chat_id,
+                        document=file_path,
+                        caption=caption,
+                        thumb=thumbnail,
+                        reply_to_message_id=reply_to_message_id,
+                        message_thread_id=message_thread_id,
+                        progress=progress_callback
+                    )
+            
+            # ============ UPLOAD AS IMAGE ============
+            elif file_type == "image":
+                logger.info("🖼️ Uploading as IMAGE")
+                
+                if file_size < 10 * 1024 * 1024:  # Under 10 MB
+                    try:
+                        sent_message = await client.send_photo(
+                            chat_id=chat_id,
+                            photo=file_path,
+                            caption=caption,
+                            reply_to_message_id=reply_to_message_id,
+                            message_thread_id=message_thread_id,
+                            progress=progress_callback
+                        )
+                    except:
+                        sent_message = await client.send_document(
+                            chat_id=chat_id,
+                            document=file_path,
+                            caption=caption,
+                            thumb=thumbnail,
+                            reply_to_message_id=reply_to_message_id,
+                            message_thread_id=message_thread_id,
+                            progress=progress_callback
+                        )
                 else:
                     sent_message = await client.send_document(
-                        **upload_kwargs,
+                        chat_id=chat_id,
                         document=file_path,
-                        thumb=thumbnail
+                        caption=caption,
+                        thumb=thumbnail,
+                        reply_to_message_id=reply_to_message_id,
+                        message_thread_id=message_thread_id,
+                        progress=progress_callback
                     )
             
+            # ============ UPLOAD AS DOCUMENT ============
             else:
+                logger.info("📄 Uploading as DOCUMENT")
+                
                 sent_message = await client.send_document(
-                    **upload_kwargs,
+                    chat_id=chat_id,
                     document=file_path,
-                    thumb=thumbnail
+                    caption=caption,
+                    thumb=thumbnail,
+                    reply_to_message_id=reply_to_message_id,
+                    message_thread_id=message_thread_id,
+                    progress=progress_callback
                 )
             
             # Cleanup thumbnail
